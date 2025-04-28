@@ -1,0 +1,65 @@
+#!/usr/bin/python3
+# Copyright Peter Csaszar (Császár Péter) 2021 <csjpeter@gmail.com>
+
+import sys
+if __file__ not in sys.argv[0] :
+	print (__file__ + " should not be imported but executed directly")
+	sys.exit(1)
+
+import json
+import time
+import datetime
+import subprocess
+import fcntl
+import os
+import re
+import getopt
+import libvb
+
+class Config : #{{{
+	vmNames = []
+
+	def __init__(this) : #{{{
+		pass
+		#}}}
+#}}}
+
+config = Config()
+
+def printHelp() : #{{{
+	print ("Usage: " + sys.argv[0] + """ <vmname>
+
+Parameters:
+	-h, --help             : shows this screen
+	--name=                : name (or prefix) for the vbox
+	--range=               : enumeration of numbers and ranges appended
+	                         to the name prefix
+""")
+#}}}
+
+def parseArgs() : #{{{
+	try:
+		opts, args = getopt.getopt(sys.argv[1:],
+						"hxx", [
+					"help",
+					"name=",
+					"range="
+					])
+	except getopt.GetoptError :
+		printHelp()
+		msg("Invalid command line arguments received.")
+		sys.exit(2)
+
+	for opt, arg in opts :
+		if opt in ("-h", "--help") :
+			printHelp()
+			sys.exit(0)
+
+	config.vmNames = libvb.parseVmNames(opts)
+#}}}
+
+parseArgs()
+
+for vmName,vmId in config.vmNames :
+	libvb.savevm(vmName)
+

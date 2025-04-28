@@ -1,0 +1,247 @@
+#!/usr/bin/python3
+# Copyright Peter Csaszar (Császár Péter) 2021 <csjpeter@gmail.com>
+
+import sys
+if __file__ not in sys.argv[0] :
+	print (__file__ + " should not be imported but executed directly")
+	sys.exit(1)
+
+import traceback
+import json
+import time
+import datetime
+import subprocess
+import fcntl
+import os
+import re
+import getopt
+import libvb
+
+
+class Config : #{{{
+	statusFilter = None
+	netFilter = None
+
+	def __init__(this) : #{{{
+		pass
+		#}}}
+#}}}
+
+config = Config()
+
+def printHelp() : #{{{
+	print ("Usage: " + sys.argv[0] + """ [options]
+
+Prints a list of available virtualbox hosts with status matching the value of statusFilter.
+
+Parameters:
+	-h, --help             : shows this screen
+	--status=value         : filter hosts having specified status
+	--net=value            : filter hosts having specified network interface
+""")
+#}}}
+
+def parseArgs() : #{{{
+	try:
+		opts, args = getopt.getopt(sys.argv[1:],
+						"hx:x:", [
+					"help",
+					"status=",
+					"net="
+					])
+	except getopt.GetoptError :
+		printHelp()
+		msg("Invalid command line arguments received.")
+		sys.exit(2)
+
+	unknownOption = ""
+
+	# commands to be executed directly
+	for opt, arg in opts :
+		if opt in ("-h", "--help") :
+			printHelp()
+			sys.exit(0)
+		elif opt in ("--status") :
+			config.statusFilter = arg
+		elif opt in ("--net") :
+			config.netFilter = arg
+		else :
+			if unknownOption == "" :
+				unknownOption = opt
+
+	if unknownOption != "" :
+		printHelp()
+		print("Unknown option received : %s" % unknownOption)
+		sys.exit(2)
+#}}}
+
+parseArgs()
+
+if config.statusFilter == "running" :
+	vmList = libvb.vboxmanage("list --sorted runningvms", echo=False)
+else :
+	vmList = libvb.vboxmanage("list --sorted vms", echo=False)
+vmListLines = vmList.split('\n')
+vmListLines.sort()
+
+print("%-10s %-20s %-8s %-12s %-15s %-12s %-15s %-12s %-15s %s" % (
+	"Hostname", "Name", "Status",
+	"MAC1", "IP0", "MAC2", "IP1", "MAC3", "IP2", "Snapshots"))
+print("%-10s %-20s %-8s %-12s %-15s %-12s %-15s %-12s %-15s %s" % (
+	"--------", "----", "------",
+	"----", "---", "----", "---", "----", "---", "---------"))
+
+hostFile = libvb.shell("cat /etc/hosts")#,throwOnError=False)
+hostFileLines = hostFile.split('\n')
+
+resultLines = []
+
+listLines = []
+
+for line in vmListLines :
+	if len(line) == 0 :
+		continue
+	lineFields = line.split(' ')
+	if len(lineFields) == 0 : 
+		continue
+	vmName = lineFields[0].split('"')[1]
+	vmInfoLines = libvb.vmInfoLines(vmName)
+
+	vmState=""
+	for line in vmInfoLines :
+		match = re.match("^State:[ \t]*([^ ]+)", line)
+		if match != None :
+			vmState = match.group(1)
+
+	if config.statusFilter != None :
+		if config.statusFilter != vmState :
+			continue
+
+	ip0=""
+	ip1=""
+	ip2=""
+	mac1=""
+	mac2=""
+	mac3=""
+	net1=""
+	net2=""
+	net3=""
+	for line in vmInfoLines :
+		match = re.match("^NIC 1: +MAC: ([^,]+), Attachment: ([^,]*),",
+				line)
+		if match != None :
+			mac1 = match.group(1)
+			net1 = match.group(2)
+		match = re.match("^NIC 2: +MAC: ([^,]+), Attachment: ([^,]*),",
+				line)
+		if match != None :
+			mac2 = match.group(1)
+			net2 = match.group(2)
+		match = re.match("^NIC 3: +MAC: ([^,]+), Attachment: ([^,]*),",
+				line)
+		if match != None :
+			mac3 = match.group(1)
+			net3 = match.group(2)
+
+	if config.netFilter != None :
+		if (		(config.netFilter not in net1) and
+				(config.netFilter not in net2) and
+				(config.netFilter not in net3) ) :
+			continue
+
+	# Harvesting snapshot list
+	snapshots = ""
+	snapshotList = []
+	snapshotsSection = False
+	for line in vmInfoLines :
+		if snapshotsSection == False :
+			match = re.match("^(Snapshots:)$", line)
+			if match != None :
+				snapshotsSection = True
+			continue
+		# snapshotsSection is True from here
+		if line == "" :
+			# Skip empty line
+			continue
+		match = re.match("^   Name: ([^ ]+) ", line)
+		if match is None :
+			# end of spanshots list
+			#snapshotsSection = False
+			break;
+		snapshotList.append(match.group(1))
+	snapshots = ",".join(snapshotList)
+
+	# Some hardcoded MAC prefix I am using for virtualbox hosts
+	# and defining ip addresses for in my isc-dhcp server config
+	if ip0 == "" and mac1[0:4] == "0E00" :
+		n1 = mac1[4:6]
+		n2 = mac1[6:8]
+		n3 = mac1[8:10]
+		n4 = mac1[10:12]
+		ip0 = "%d.%d.%d.%d" % (
+				int(n1, 16), int(n2, 16), int(n3, 16), int(n4, 16)
+				)
+	if ip1 == "" and mac2[0:4] == "0E00" :
+		n1 = mac1[4:6]
+		n2 = mac1[6:8]
+		n3 = mac1[8:10]
+		n4 = mac1[10:12]
+		ip1 = "%d.%d.%d.%d" % (
+				int(n1, 16), int(n2, 16), int(n3, 16), int(n4, 16)
+				)
+	if ip2 == "" and mac3[0:4] == "0E00" :
+		n1 = mac1[4:6]
+		n2 = mac1[6:8]
+		n3 = mac1[8:10]
+		n4 = mac1[10:12]
+		ip2 = "%d.%d.%d.%d" % (
+				int(n1, 16), int(n2, 16), int(n3, 16), int(n4, 16)
+				)
+
+
+	if ip0 == "" :
+		vmPropertiesLines = libvb.vmPropertyLines(vmName)
+		for line in vmPropertiesLines :
+			match = re.match("^Name: /VirtualBox/GuestInfo/Net/"
+					"0/V4/IP, value: ([^,]*),.*", line)
+			if match != None :
+				ip0 = match.group(1)
+			match = re.match("^Name: /VirtualBox/GuestInfo/Net/"
+					"1/V4/IP, value: ([^,]*),.*", line)
+			if match != None :
+				ip1 = match.group(1)
+			match = re.match("^Name: /VirtualBox/GuestInfo/Net/"
+					"2/V4/IP, value: ([^,]*),.*", line)
+			if match != None :
+				ip2 = match.group(1)
+
+	hostName=""
+	if ip0 != "" :
+		for line in hostFileLines :
+			# drop whitespace at the end
+			line = re.sub(r'[ \t]*$', r'', line)
+			# check if line starts with the ip we are looking for
+			match = re.match("^%s[ \t]+" % ip0, line)
+			if match is None :
+				continue
+			#print(line)
+			# pick the last word at the end of the line
+			match = re.match(".*[ \t]+([^ \t]*)$", line)
+			if match != None :
+				hostName = match.group(1)
+				break
+
+	ip01 = 0
+	ips = ip0.split('.')
+	if len(ips) == 4 :
+		ip01 = int(ips[3])
+
+	listLines.append(
+		"%03d%-10s %-20s %-8s %-12s %-15s %-12s %-15s %-12s %-15s %s" % (
+		ip01, hostName, vmName, vmState, mac1, ip0, mac2, ip1, mac3, ip2,
+		snapshots))
+
+listLines.sort()
+for line in listLines :
+	print(line[3:])
+
